@@ -10,27 +10,24 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/rancher/norman/types/convert"
+	v3Setting "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/channelserver"
-	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
-	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
+	v3 "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/settings"
-	"github.com/rancher/rancher/pkg/types/config"
+	"github.com/rancher/rancher/pkg/wrangler"
+	v1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/runtime"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type MetadataController struct {
-	NamespacesLister     v1.NamespaceLister
-	SystemImagesLister   v3.RkeK8sSystemImageLister
-	SystemImages         v3.RkeK8sSystemImageInterface
-	ServiceOptionsLister v3.RkeK8sServiceOptionLister
-	ServiceOptions       v3.RkeK8sServiceOptionInterface
-	AddonsLister         v3.RkeAddonLister
-	Addons               v3.RkeAddonInterface
-	SettingLister        v3.SettingLister
-	Settings             v3.SettingInterface
-	url                  *MetadataURL
+	NamespacesController     v1.NamespaceController
+	SystemImagesController   v3.RkeK8sSystemImageController
+	ServiceOptionsController v3.RkeK8sServiceOptionController
+	Addons                   v3.RkeAddonController
+	Settings                 v3.SettingController
+	url                      *MetadataURL
 }
 
 type MetadataURL struct {
@@ -59,31 +56,27 @@ var (
 	fileMapData = map[string]bool{}
 )
 
-func Register(ctx context.Context, management *config.ManagementContext) {
-	mgmt := management.Management
+func Register(ctx context.Context, wCtx *wrangler.Context) {
 
 	m := &MetadataController{
-		SystemImagesLister:   mgmt.RkeK8sSystemImages("").Controller().Lister(),
-		SystemImages:         mgmt.RkeK8sSystemImages(""),
-		ServiceOptionsLister: mgmt.RkeK8sServiceOptions("").Controller().Lister(),
-		ServiceOptions:       mgmt.RkeK8sServiceOptions(""),
-		NamespacesLister:     management.Core.Namespaces("").Controller().Lister(),
-		AddonsLister:         mgmt.RkeAddons("").Controller().Lister(),
-		Addons:               mgmt.RkeAddons(""),
-		SettingLister:        mgmt.Settings("").Controller().Lister(),
-		Settings:             mgmt.Settings(""),
+		SystemImagesController:   wCtx.Mgmt.RkeK8sSystemImage(),
+		ServiceOptionsController: wCtx.Mgmt.RkeK8sServiceOption(),
+		NamespacesController:     wCtx.Core.Namespace(),
+		Addons:                   wCtx.Mgmt.RkeAddon(),
+		Settings:                 wCtx.Mgmt.Setting(),
 	}
 
-	mgmt.Settings("").AddHandler(ctx, "rke-metadata-handler", m.sync)
-	mgmt.Settings("").Controller().Enqueue("", rkeMetadataConfig)
+	wCtx.Mgmt.Setting().OnChange(ctx, "rke-metadata-handler", m.sync)
+	//mgmt.Settings("").AddHandler(ctx, "rke-metadata-handler", m.sync)
+	//mgmt.Settings("").Controller().Enqueue("", rkeMetadataConfig)
 }
 
-func (m *MetadataController) sync(key string, setting *v3.Setting) (runtime.Object, error) {
+func (m *MetadataController) sync(_ string, setting *v3Setting.Setting) (*v3Setting.Setting, error) {
 	if setting == nil || (setting.Name != rkeMetadataConfig) {
 		return nil, nil
 	}
 
-	if _, err := m.NamespacesLister.Get("", namespace.GlobalNamespace); err != nil {
+	if _, err := m.NamespacesController.Get(namespace.GlobalNamespace, metav1.GetOptions{}); err != nil {
 		return nil, fmt.Errorf("failed to get %s namespace", namespace.GlobalNamespace)
 	}
 
@@ -109,7 +102,7 @@ func (m *MetadataController) sync(key string, setting *v3.Setting) (runtime.Obje
 
 	if interval > 0 {
 		logrus.Infof("Refreshing driverMetadata in %v minutes", interval)
-		m.Settings.Controller().EnqueueAfter(setting.Namespace, setting.Name, time.Minute*time.Duration(interval))
+		m.Settings.EnqueueAfter(setting.Name, time.Minute*time.Duration(interval))
 	}
 
 	// refresh to sync k3s/rke2 releases
